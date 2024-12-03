@@ -1,10 +1,13 @@
+* {
+  font-family: Poppins, "Open Sans", Helvetica, Arial, sans-serif;
+}
+
 body,
 html {
   margin: 0;
   display: flex;
   flex-direction: column;
   height: 100vh;
-  font-family: Lato, "Open Sans", Helvetica, Arial, sans-serif;
   font-size: 14px;
 }
 
