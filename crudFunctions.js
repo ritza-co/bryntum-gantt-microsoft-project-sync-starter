@@ -78,7 +78,7 @@ export async function getProjectTaskDependencies() {
     }
 }
 
-export async function createProjectTask(projectId, projectBucketId, operationSetId, record) {
+export async function createProjectTask(projectId, projectBucketId, operationSetId, record, msdyn_displaysequence) {
     const accessToken = await getToken();
     ensureScope(`https://${import.meta.env.VITE_MICROSOFT_DYNAMICS_ORG_ID}.api.crm4.dynamics.com/.default`);
     if (!accessToken) {
@@ -95,8 +95,8 @@ export async function createProjectTask(projectId, projectBucketId, operationSet
             'msdyn_project@odata.bind'       : `msdyn_projects(${projectId})`,
             'msdyn_projectbucket@odata.bind' : `msdyn_projectbuckets(${projectBucketId})`,
             '_msdyn_parenttask_value'        : record.parentId,
-            'msdyn_progress'                 : record.percentDone / 100
-            // 'msdyn_displaysequence'          : record.parentIndex + 1
+            'msdyn_progress'                 : record.percentDone / 100,
+            'msdyn_displaysequence'          : msdyn_displaysequence
         },
         'OperationSetId' : operationSetId
     };
@@ -221,7 +221,7 @@ export async function abandonOperationSet(operationSetId) {
     return data;
 }
 
-export async function updateProjectTask(projectId, projectBucketId, operationSetId, record) {
+export async function updateProjectTask(projectId, projectBucketId, operationSetId, record, msdyn_displaysequence) {
     const accessToken = await getToken();
     ensureScope(`https://${import.meta.env.VITE_MICROSOFT_DYNAMICS_ORG_ID}.api.crm4.dynamics.com/.default`);
     if (!accessToken) {
@@ -252,10 +252,11 @@ export async function updateProjectTask(projectId, projectBucketId, operationSet
     if (record.parentId) {
         payloadObj.Entity._msdyn_parenttask_value = record.parentId;
     }
-    // 	The Progress, EffortCompleted, and EffortRemaining fields can be edited in Project for the Web, but they can't be edited in Project Operations: https://learn.microsoft.com/en-us/dynamics365/project-operations/project-management/schedule-api-preview
-    if (record.parentIndex) {
-        payloadObj.Entity.msdyn_displaysequence = record.parentIndex + 1;
+    if (msdyn_displaysequence) {
+        payloadObj.Entity.msdyn_displaysequence = msdyn_displaysequence;
     }
+
+    // 	The Progress, EffortCompleted, and EffortRemaining fields can be edited in Project for the Web, but they can't be edited in Project Operations: https://learn.microsoft.com/en-us/dynamics365/project-operations/project-management/schedule-api-preview
 
     const response = await fetch(apiUrl, {
         method  : 'POST',

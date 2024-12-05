@@ -54,20 +54,19 @@ async function displayUI() {
                 finishDateUTC.getTime() - finishDateUTC.getTimezoneOffset() * 60000
             );
             ganttTasks.push({
-                id                : event.msdyn_projecttaskid,
-                parentId          : event._msdyn_parenttask_value,
-                name              : event.msdyn_subject,
-                startDate         : startDateLocal,
-                endDate           : finishDateLocal,
-                percentDone       : event.msdyn_progress * 100,
-                parentIndex       : parseInt(event.msdyn_displaysequence) + 1,
-                manuallyScheduled : true,
-                outlineLevel      : event.msdyn_outlinelevel
+                id                    : event.msdyn_projecttaskid,
+                parentId              : event._msdyn_parenttask_value,
+                name                  : event.msdyn_subject,
+                startDate             : startDateLocal,
+                endDate               : finishDateLocal,
+                percentDone           : event.msdyn_progress * 100,
+                msdyn_displaysequence : parseInt(event.msdyn_displaysequence),
+                manuallyScheduled     : true,
+                outlineLevel          : event.msdyn_outlinelevel
             });
         });
-        ganttTasks.sort((a, b) => a.parentIndex - b.parentIndex);
+        ganttTasks.sort((a, b) => a.msdyn_displaysequence - b.msdyn_displaysequence);
         gantt.project.tasks = ganttTasks;
-
         const ganttDependencies = [];
         projectDependencies.forEach((dep) => {
             ganttDependencies.push({
@@ -97,7 +96,17 @@ async function updateMicrosoftProject({ action, record, store, records }) {
                 const description = 'Create operation set for new project task';
                 try {
                     operationSetId = await createOperationSet(projectId, description);
-                    const createProjectTaskResponse = await createProjectTask(projectId, projectBucketId, operationSetId, record);
+                    let msdyn_displaysequence = null;
+                    if (!record.previousSibling) {
+                        msdyn_displaysequence = record.nextSibling.msdyn_displaysequence / 2;
+                    }
+                    if (!record.nextSibling) {
+                        msdyn_displaysequence = record.previousSibling.msdyn_displaysequence  + 1;
+                    }
+                    if (record.previousSibling && record.nextSibling) {
+                        msdyn_displaysequence = (record.previousSibling.msdyn_displaysequence + record.nextSibling.msdyn_displaysequence) / 2;
+                    }
+                    const createProjectTaskResponse = await createProjectTask(projectId, projectBucketId, operationSetId, record, msdyn_displaysequence);
                     await executeOperationSet(operationSetId);
                     // update id
                     gantt.project.taskStore.applyChangeset({
@@ -105,7 +114,7 @@ async function updateMicrosoftProject({ action, record, store, records }) {
                             // Will set proper id for added task
                             {
                                 $PhantomId : record.id,
-                                id         : createProjectTaskResponse['<OperationSetResponses>k__BackingField'][3].Value
+                                id         : JSON.parse(createProjectTaskResponse.OperationSetResponse)['<OperationSetResponses>k__BackingField'][3].Value
                             }
                         ]
                     });
@@ -117,6 +126,7 @@ async function updateMicrosoftProject({ action, record, store, records }) {
                 }
             }
             else {
+                if (record.meta.modified.id) return;
                 let operationSetId = '';
                 const projectId = import.meta.env.VITE_MSDYN_PROJECT_ID;
                 const projectBucketId = import.meta.env.VITE_MSDYN_PROJECTBUCKET_VALUE;
@@ -124,7 +134,19 @@ async function updateMicrosoftProject({ action, record, store, records }) {
 
                 try {
                     operationSetId = await createOperationSet(projectId, description);
-                    await updateProjectTask(projectId, projectBucketId, operationSetId, record);
+                    let msdyn_displaysequence = null;
+                    if ('parentIndex' in record.meta.modified && 'orderedParentIndex' in record.meta.modified && Object.keys(record.meta.modified).length === 2) {
+                        if (!record.previousSibling) {
+                            msdyn_displaysequence = record.nextSibling.msdyn_displaysequence / 2;
+                        }
+                        if (!record.nextSibling) {
+                            msdyn_displaysequence = record.previousSibling.msdyn_displaysequence  + 1;
+                        }
+                        if (record.previousSibling && record.nextSibling) {
+                            msdyn_displaysequence = (record.previousSibling.msdyn_displaysequence + record.nextSibling.msdyn_displaysequence) / 2;
+                        }
+                    }
+                    await updateProjectTask(projectId, projectBucketId, operationSetId, record, msdyn_displaysequence);
                     await executeOperationSet(operationSetId);
                     return;
                 }
