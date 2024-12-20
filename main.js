@@ -1,7 +1,7 @@
 import { Gantt } from '@bryntum/gantt';
 import '@bryntum/gantt/gantt.stockholm.css';
 import { signIn } from './auth.js';
-import { abandonOperationSet, createOperationSet, createProjectTask, createProjectTaskDependency, deleteProjectTask, deleteProjectTaskDependency, executeOperationSet, getProjectTaskDependencies, getProjectTasks, updateProjectTask } from './crudFunctions.js';
+import { abandonOperationSet, createOperationSet, createProjectTask, createProjectTaskDependency, deleteProjectTask, deleteProjectTaskDependency, executeOperationSet, getProjectTaskDependencies, getProjectTasks, updateProjectTask, waitForTaskCreationThenGetId } from './crudFunctions.js';
 import CustomTaskModel from './lib/CustomTaskModel.js';
 
 const signInLink = document.getElementById('signin');
@@ -24,7 +24,6 @@ const gantt = new Gantt({
         }
     }
 });
-
 async function displayUI() {
     await signIn();
 
@@ -95,26 +94,40 @@ async function updateMicrosoftProject({ action, record, store, records }) {
                 const projectBucketId = import.meta.env.VITE_MSDYN_PROJECTBUCKET_VALUE;
                 const description = 'Create operation set for new project task';
                 try {
+                    gantt.maskBody('Creating task...');
                     operationSetId = await createOperationSet(projectId, description);
                     let msdyn_displaysequence = null;
                     if (!record.previousSibling) {
                         msdyn_displaysequence = record.nextSibling.msdyn_displaysequence / 2;
                     }
                     if (!record.nextSibling) {
-                        msdyn_displaysequence = record.previousSibling.msdyn_displaysequence  + 1;
+                        msdyn_displaysequence = record.previousSibling.msdyn_displaysequence + 1;
                     }
                     if (record.previousSibling && record.nextSibling) {
                         msdyn_displaysequence = (record.previousSibling.msdyn_displaysequence + record.nextSibling.msdyn_displaysequence) / 2;
                     }
+                    // Add a small fraction to avoid value conflicts
+                    msdyn_displaysequence += 0.01;
+                    if (msdyn_displaysequence <= 1) {
+                        msdyn_displaysequence = 1.1;
+                    }
+                    // round to maximum 9 decimal places
+                    msdyn_displaysequence = Number(msdyn_displaysequence.toFixed(9));
                     const createProjectTaskResponse = await createProjectTask(projectId, projectBucketId, operationSetId, record, msdyn_displaysequence);
+                    const newId = JSON.parse(createProjectTaskResponse.OperationSetResponse)['<OperationSetResponses>k__BackingField'][3].Value;
+
                     await executeOperationSet(operationSetId);
+                    // wait 500 ms
+                    // fetch the newly created task by id to get its new display sequence - it is not returned by createProjectTask
+                    const new_msdyn_displaysequence = await waitForTaskCreationThenGetId(newId);
                     // update id
                     gantt.project.taskStore.applyChangeset({
                         updated : [
                             // Will set proper id for added task
                             {
-                                $PhantomId : record.id,
-                                id         : JSON.parse(createProjectTaskResponse.OperationSetResponse)['<OperationSetResponses>k__BackingField'][3].Value
+                                $PhantomId            : record.id,
+                                id                    : newId,
+                                msdyn_displaysequence : new_msdyn_displaysequence
                             }
                         ]
                     });
@@ -123,6 +136,9 @@ async function updateMicrosoftProject({ action, record, store, records }) {
                 catch (error) {
                     await abandonOperationSet(operationSetId);
                     console.error('Error:', error);
+                }
+                finally {
+                    gantt.unmaskBody();
                 }
             }
             else {
@@ -133,6 +149,7 @@ async function updateMicrosoftProject({ action, record, store, records }) {
                 const description = 'Create operation set for updating a project task';
 
                 try {
+                    gantt.maskBody('Updating task...');
                     operationSetId = await createOperationSet(projectId, description);
                     let msdyn_displaysequence = null;
                     if ('parentIndex' in record.meta.modified && 'orderedParentIndex' in record.meta.modified && Object.keys(record.meta.modified).length === 2) {
@@ -146,6 +163,12 @@ async function updateMicrosoftProject({ action, record, store, records }) {
                             msdyn_displaysequence = (record.previousSibling.msdyn_displaysequence + record.nextSibling.msdyn_displaysequence) / 2;
                         }
                     }
+                    msdyn_displaysequence += .50001;
+                    if (msdyn_displaysequence <= 1) {
+                        msdyn_displaysequence = 1.1;
+                    }
+                    // round to maximum 9 decimal places
+                    msdyn_displaysequence = Number(msdyn_displaysequence.toFixed(9));
                     await updateProjectTask(projectId, projectBucketId, operationSetId, record, msdyn_displaysequence);
                     await executeOperationSet(operationSetId);
                     return;
@@ -153,6 +176,9 @@ async function updateMicrosoftProject({ action, record, store, records }) {
                 catch (error) {
                     await abandonOperationSet(operationSetId);
                     console.error('Error:', error);
+                }
+                finally {
+                    gantt.unmaskBody();
                 }
             }
         }
@@ -164,6 +190,7 @@ async function updateMicrosoftProject({ action, record, store, records }) {
                 const projectId = import.meta.env.VITE_MSDYN_PROJECT_ID;
                 const description = 'Create operation set for deleting project task';
                 try {
+                    gantt.maskBody('Deleting task...');
                     operationSetId = await createOperationSet(projectId, description);
                     await deleteProjectTask(operationSetId, record.id);
                     await executeOperationSet(operationSetId);
@@ -172,6 +199,9 @@ async function updateMicrosoftProject({ action, record, store, records }) {
                 catch (error) {
                     await abandonOperationSet(operationSetId);
                     console.error('Error:', error);
+                }
+                finally {
+                    gantt.unmaskBody();
                 }
             });
         }
@@ -186,6 +216,7 @@ async function updateMicrosoftProject({ action, record, store, records }) {
                     const projectId = import.meta.env.VITE_MSDYN_PROJECT_ID;
                     const description = 'Create operation set for new project task dependency';
                     try {
+                        gantt.maskBody('Creating dependency...');
                         operationSetId = await createOperationSet(projectId, description);
                         const createProjectTaskDependencyResponse = await createProjectTaskDependency(projectId, operationSetId, record);
                         await executeOperationSet(operationSetId);
@@ -205,6 +236,9 @@ async function updateMicrosoftProject({ action, record, store, records }) {
                         await abandonOperationSet(operationSetId);
                         console.error('Error:', error);
                     }
+                    finally {
+                        gantt.unmaskBody();
+                    }
                 }
                 else {
                     // 1. delete old dependency
@@ -213,6 +247,7 @@ async function updateMicrosoftProject({ action, record, store, records }) {
                     const projectId = import.meta.env.VITE_MSDYN_PROJECT_ID;
                     description = 'Operation set for updating a project task dependency: delete old and create new';
                     try {
+                        gantt.maskBody('Updating dependency...');
                         operationSetId = await createOperationSet(projectId, description);
                         await deleteProjectTaskDependency(record.id, operationSetId);
                         const createProjectTaskDependencyResponse = await createProjectTaskDependency(projectId, operationSetId, record);
@@ -233,6 +268,9 @@ async function updateMicrosoftProject({ action, record, store, records }) {
                         await abandonOperationSet(operationSetId);
                         console.error('Error:', error);
                     }
+                    finally {
+                        gantt.unmaskBody();
+                    }
                 }
             }
             if (action === 'remove') {
@@ -240,6 +278,7 @@ async function updateMicrosoftProject({ action, record, store, records }) {
                 const projectId = import.meta.env.VITE_MSDYN_PROJECT_ID;
                 const description = 'Create operation set for deleting project task dependency';
                 try {
+                    gantt.maskBody('Deleting dependency...');
                     operationSetId = await createOperationSet(projectId, description);
                     await deleteProjectTaskDependency(record.id, operationSetId);
                     await executeOperationSet(operationSetId);
@@ -247,6 +286,9 @@ async function updateMicrosoftProject({ action, record, store, records }) {
                 catch (error) {
                     await abandonOperationSet(operationSetId);
                     console.error('Error:', error);
+                }
+                finally {
+                    gantt.unmaskBody();
                 }
             }
         });

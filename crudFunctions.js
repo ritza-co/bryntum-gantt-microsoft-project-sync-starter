@@ -39,6 +39,60 @@ export async function getProjectTasks() {
     }
 }
 
+export async function getProjectTaskById(taskId) {
+    try {
+        const accessToken = await getToken();
+        ensureScope(`https://${
+        import.meta.env.VITE_MICROSOFT_DYNAMICS_ORG_ID
+    }.api.crm4.dynamics.com/.default`);
+        if (!accessToken) {
+            throw new Error('Access token is missing');
+        }
+
+        const apiUrl = `https://${
+      import.meta.env.VITE_MICROSOFT_DYNAMICS_ORG_ID
+    }.api.crm4.dynamics.com/api/data/v9.1/msdyn_projecttasks(${taskId})`;
+
+        const response = await fetch(apiUrl, {
+            method  : 'GET',
+            headers : {
+                'Authorization'    : `Bearer ${accessToken}`,
+                'OData-MaxVersion' : '4.0',
+                'OData-Version'    : '4.0',
+                'Accept'           : 'application/json',
+                'Content-Type'     : 'application/json'
+            }
+        });
+
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        const data = await response.json();
+        return data.msdyn_displaysequence;
+    }
+    catch (error) {
+        console.error('Error fetching project task:', error);
+        throw error;
+    }
+}
+
+export async function waitForTaskCreationThenGetId(taskId, maxRetries = 20, delay = 1000) {
+    for (let i = 0; i < maxRetries; i++) {
+        try {
+            const task = await getProjectTaskById(taskId);
+            return task;
+        }
+        catch {
+            if (i === maxRetries - 1) {
+                throw new Error('Task creation timed out');
+            }
+            console.log('Task not created yet, checking for newly created task again...');
+            await new Promise((resolve) => setTimeout(resolve, delay));
+        }
+    }
+}
+
+
 export async function getProjectTaskDependencies() {
     try {
         const accessToken = await getToken();
