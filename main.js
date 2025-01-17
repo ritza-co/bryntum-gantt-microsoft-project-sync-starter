@@ -1,10 +1,13 @@
 import { Gantt } from '@bryntum/gantt';
 import '@bryntum/gantt/gantt.stockholm.css';
 import { signIn } from './auth.js';
-import { abandonOperationSet, createOperationSet, createProjectTask, createProjectTaskDependency, deleteProjectTask, deleteProjectTaskDependency, executeOperationSet, getProjectTaskDependencies, getProjectTasks, updateProjectTask, waitForTaskCreationThenGetId } from './crudFunctions.js';
+import { abandonOperationSet, createOperationSet, createProjectTask, createProjectTaskDependency, deleteProjectTask, deleteProjectTaskDependency, executeOperationSet, getProjectTaskDependencies, getProjectTasks, updateProjectTask, waitForOperationSetCompletion } from './crudFunctions.js';
 import CustomTaskModel from './lib/CustomTaskModel.js';
 
 const signInLink = document.getElementById('signin');
+
+let disableCreate = false;
+let disableDelete = false;
 
 const gantt = new Gantt({
     appendTo   : 'gantt',
@@ -12,18 +15,57 @@ const gantt = new Gantt({
     timeZone   : 'UTC',
     date       : new Date(2024, 10, 1),
     project    : {
-        taskStore : {
+        taskModelClass : CustomTaskModel,
+        taskStore      : {
             transformFlatData : true,
             modelClass        : CustomTaskModel
         },
         writeAllFields : true
     },
+    features : {
+        taskMenu : {
+            items : {
+                // Hide items from the `edit` menu
+                copy               : false,
+                indent             : false,
+                outdent            : false,
+                convertToMilestone : false
+            }
+        },
+        taskEdit : {
+            items : {
+                generalTab : {
+                    items : {
+                        percentDone : {
+                            disabled : true
+                        },
+                        effort : {
+                            disabled : true
+                        }
+                    }
+                },
+                resourcesTab : false,
+                advancedTab  : false
+            }
+        }
+    },
     listeners : {
         dataChange : function(event) {
             updateMicrosoftProject(event);
+        },
+        cellClick : function({ target }) {
+            if (target.className === 'b-tree-expander b-icon b-icon-tree-collapse' || target.className === 'b-tree-expander b-icon b-icon-tree-expand') {
+                disableCreate  = true;
+                disableDelete = true;
+                setTimeout(() => {
+                    disableCreate = false;
+                    disableDelete = false;
+                }, 50);
+            }
         }
     }
 });
+
 async function displayUI() {
     await signIn();
 
@@ -59,9 +101,11 @@ async function displayUI() {
                 startDate             : startDateLocal,
                 endDate               : finishDateLocal,
                 percentDone           : event.msdyn_progress * 100,
-                msdyn_displaysequence : parseInt(event.msdyn_displaysequence),
+                effort                : event.msdyn_effort,
+                msdyn_displaysequence : event.msdyn_displaysequence,
                 manuallyScheduled     : true,
-                outlineLevel          : event.msdyn_outlinelevel
+                msdyn_outlinelevel    : event.msdyn_outlinelevel,
+                note                  : event.msdyn_descriptionplaintext
             });
         });
         ganttTasks.sort((a, b) => a.msdyn_displaysequence - b.msdyn_displaysequence);
@@ -83,6 +127,57 @@ async function displayUI() {
 
 signInLink.addEventListener('click', displayUI);
 
+function calculateNewDisplaySequence(prevSeq, nextSeq) {
+    if (prevSeq === undefined) {
+        prevSeq = 1;
+    }
+    if (nextSeq === undefined) {
+        return prevSeq + 1;
+    }
+
+    let newSeq = (prevSeq + nextSeq) / 2;
+
+    // Round to max 9 decimal places
+    // so we don’t exceed the msdyn_displaysequence column’s precision limit
+    const seqParts = newSeq.toString().split('.');
+    const decimalPart = seqParts[1] || '';
+    const decimalCount = decimalPart.length;
+    if (decimalCount > 9) {
+        // Round to 9 decimals
+        newSeq = Math.round(newSeq * 1e9) / 1e9;
+    }
+    return newSeq;
+}
+
+function getSubtaskBoundaries(parentTask, record) {
+    let prevSeq, nextSeq;
+    // 1. Figure out prev boundary
+    if (record.previousSibling) {
+        prevSeq = record.previousSibling.msdyn_displaysequence;
+    }
+    else {
+        // No previous sibling => use parent's sequence
+        prevSeq = parentTask.data.msdyn_displaysequence;
+    }
+
+    // 2. Figure out next boundary
+    if (record.nextSibling) {
+        nextSeq = record.nextSibling.msdyn_displaysequence;
+    }
+    else {
+        // If parent has a next sibling at top level, use that
+        if (parentTask.nextSibling) {
+            nextSeq = parentTask.nextSibling.data.msdyn_displaysequence;
+        }
+        else {
+            // Parent is last => fallback
+            nextSeq = prevSeq + 1;
+        }
+    }
+
+    return { prevSeq, nextSeq };
+}
+
 async function updateMicrosoftProject({ action, record, store, records }) {
     const storeId = store.id;
     if (storeId === 'tasks') {
@@ -93,44 +188,52 @@ async function updateMicrosoftProject({ action, record, store, records }) {
                 const projectId = import.meta.env.VITE_MSDYN_PROJECT_ID;
                 const projectBucketId = import.meta.env.VITE_MSDYN_PROJECTBUCKET_VALUE;
                 const description = 'Create operation set for new project task';
+                if (disableCreate) return;
+
                 try {
                     gantt.maskBody('Creating task...');
                     operationSetId = await createOperationSet(projectId, description);
-                    let msdyn_displaysequence = null;
-                    if (!record.previousSibling) {
-                        msdyn_displaysequence = record.nextSibling.msdyn_displaysequence / 2;
+
+                    let previousSibling = record.previousSibling?.msdyn_displaysequence;
+                    let nextSibling = record.nextSibling?.msdyn_displaysequence;
+
+                    // check if subtask
+                    const isSubtask = record.parentId !== null;
+
+                    if (isSubtask) {
+                        const parentTask = gantt.taskStore.getById(record.parentId);
+                        const { prevSeq, nextSeq } = getSubtaskBoundaries(parentTask, record);
+                        previousSibling = prevSeq;
+                        nextSibling = nextSeq;
                     }
-                    if (!record.nextSibling) {
-                        msdyn_displaysequence = record.previousSibling.msdyn_displaysequence + 1;
+                    // if previous sibling has children, get the last child's display sequence
+                    if (previousSibling && record.previousSibling?.children?.length > 0) {
+                        previousSibling = record.previousSibling.children.map((child) => child.data.msdyn_displaysequence).sort((a, b) => a - b).at(-1);
                     }
-                    if (record.previousSibling && record.nextSibling) {
-                        msdyn_displaysequence = (record.previousSibling.msdyn_displaysequence + record.nextSibling.msdyn_displaysequence) / 2;
+                    // prev and no next -  check if previous sibling has children - if yes -> get its next sibling's display sequence
+                    if (previousSibling && record.previousSibling?.children?.length > 0 && !nextSibling) {
+                        const newNextSibling = record.previousSibling.nextSibling;
+                        if (newNextSibling) {
+                            nextSibling = newNextSibling.data.msdyn_displaysequence;
+                        }
                     }
-                    // Add a small fraction to avoid value conflicts
-                    msdyn_displaysequence += 0.01;
-                    if (msdyn_displaysequence <= 1) {
-                        msdyn_displaysequence = 1.1;
-                    }
-                    // round to maximum 9 decimal places
-                    msdyn_displaysequence = Number(msdyn_displaysequence.toFixed(9));
+                    const msdyn_displaysequence = calculateNewDisplaySequence(previousSibling, nextSibling);
                     const createProjectTaskResponse = await createProjectTask(projectId, projectBucketId, operationSetId, record, msdyn_displaysequence);
                     const newId = JSON.parse(createProjectTaskResponse.OperationSetResponse)['<OperationSetResponses>k__BackingField'][3].Value;
 
                     await executeOperationSet(operationSetId);
-                    // wait 500 ms
-                    // fetch the newly created task by id to get its new display sequence - it is not returned by createProjectTask
-                    const new_msdyn_displaysequence = await waitForTaskCreationThenGetId(newId);
                     // update id
                     gantt.project.taskStore.applyChangeset({
                         updated : [
-                            // Will set proper id for added task
+                        // Will set proper id for added task
                             {
-                                $PhantomId            : record.id,
-                                id                    : newId,
-                                msdyn_displaysequence : new_msdyn_displaysequence
+                                $PhantomId : record.id,
+                                id         : newId
                             }
                         ]
                     });
+                    // check if task available for CRUD operations
+                    await waitForOperationSetCompletion(operationSetId, 'task');
                     return;
                 }
                 catch (error) {
@@ -142,43 +245,50 @@ async function updateMicrosoftProject({ action, record, store, records }) {
                 }
             }
             else {
-                if (record.meta.modified.id) return;
+                if (Object.keys(record.meta.modified).length === 0) return;
+                if (record.meta.modified.effort === 0 && Object.keys(record.meta.modified).length === 1) return;
+                if (record.meta.modified.id && Object.keys(record.meta.modified).length === 1) return;
                 let operationSetId = '';
                 const projectId = import.meta.env.VITE_MSDYN_PROJECT_ID;
-                const projectBucketId = import.meta.env.VITE_MSDYN_PROJECTBUCKET_VALUE;
                 const description = 'Create operation set for updating a project task';
 
                 try {
-                    gantt.maskBody('Updating task...');
                     operationSetId = await createOperationSet(projectId, description);
-                    let msdyn_displaysequence = null;
-                    if ('parentIndex' in record.meta.modified && 'orderedParentIndex' in record.meta.modified && Object.keys(record.meta.modified).length === 2) {
-                        if (!record.previousSibling) {
-                            msdyn_displaysequence = record.nextSibling.msdyn_displaysequence / 2;
-                        }
-                        if (!record.nextSibling) {
-                            msdyn_displaysequence = record.previousSibling.msdyn_displaysequence  + 1;
-                        }
-                        if (record.previousSibling && record.nextSibling) {
-                            msdyn_displaysequence = (record.previousSibling.msdyn_displaysequence + record.nextSibling.msdyn_displaysequence) / 2;
+
+                    let previousSibling = record.previousSibling?.msdyn_displaysequence;
+                    let nextSibling = record.nextSibling?.msdyn_displaysequence;
+
+                    // check if subtask
+                    const isSubtask = record.parentId !== null;
+
+                    if (isSubtask) {
+                        const parentTask = gantt.taskStore.getById(record.parentId);
+                        const { prevSeq, nextSeq } = getSubtaskBoundaries(parentTask, record);
+                        previousSibling = prevSeq;
+                        nextSibling = nextSeq;
+                    }
+                    // if previous sibling has children, get the last child's display sequence
+                    if (previousSibling && record.previousSibling?.children?.length > 0) {
+                        previousSibling = record.previousSibling.children.map((child) => child.data.msdyn_displaysequence).sort((a, b) => a - b).at(-1);
+                    }
+                    // prev and no next -  check if previous sibling has children - if yes -> get its next sibling's display sequence
+                    if (previousSibling && record.previousSibling?.children?.length > 0 && !nextSibling) {
+                        const newNextSibling = record.previousSibling.nextSibling;
+                        if (newNextSibling) {
+                            nextSibling = newNextSibling.data.msdyn_displaysequence;
                         }
                     }
-                    msdyn_displaysequence += .50001;
-                    if (msdyn_displaysequence <= 1) {
-                        msdyn_displaysequence = 1.1;
-                    }
-                    // round to maximum 9 decimal places
-                    msdyn_displaysequence = Number(msdyn_displaysequence.toFixed(9));
-                    await updateProjectTask(projectId, projectBucketId, operationSetId, record, msdyn_displaysequence);
+                    const msdyn_displaysequence = calculateNewDisplaySequence(previousSibling, nextSibling);
+                    const isReorder = record.meta.modified.orderedParentIndex !== undefined;
+                    gantt.project.taskStore.commit();
+                    const isParentTask = record.children?.length > 0;
+                    await updateProjectTask(operationSetId, record, msdyn_displaysequence, isReorder, isParentTask);
                     await executeOperationSet(operationSetId);
                     return;
                 }
                 catch (error) {
                     await abandonOperationSet(operationSetId);
                     console.error('Error:', error);
-                }
-                finally {
-                    gantt.unmaskBody();
                 }
             }
         }
@@ -190,7 +300,7 @@ async function updateMicrosoftProject({ action, record, store, records }) {
                 const projectId = import.meta.env.VITE_MSDYN_PROJECT_ID;
                 const description = 'Create operation set for deleting project task';
                 try {
-                    gantt.maskBody('Deleting task...');
+                    if (disableDelete) return;
                     operationSetId = await createOperationSet(projectId, description);
                     await deleteProjectTask(operationSetId, record.id);
                     await executeOperationSet(operationSetId);
@@ -199,9 +309,6 @@ async function updateMicrosoftProject({ action, record, store, records }) {
                 catch (error) {
                     await abandonOperationSet(operationSetId);
                     console.error('Error:', error);
-                }
-                finally {
-                    gantt.unmaskBody();
                 }
             });
         }
@@ -230,6 +337,7 @@ async function updateMicrosoftProject({ action, record, store, records }) {
                                 }
                             ]
                         });
+                        await waitForOperationSetCompletion(operationSetId, 'dependency');
                         return;
                     }
                     catch (error) {
@@ -262,6 +370,8 @@ async function updateMicrosoftProject({ action, record, store, records }) {
                                 }
                             ]
                         });
+                        await waitForOperationSetCompletion(operationSetId, 'dependency');
+                        return;
                     }
                     catch (error) {
                         await abandonOperationSet(operationSetId);
@@ -278,7 +388,6 @@ async function updateMicrosoftProject({ action, record, store, records }) {
                 const projectId = import.meta.env.VITE_MSDYN_PROJECT_ID;
                 const description = 'Create operation set for deleting project task dependency';
                 try {
-                    gantt.maskBody('Deleting dependency...');
                     operationSetId = await createOperationSet(projectId, description);
                     await deleteProjectTaskDependency(record.id, operationSetId);
                     await executeOperationSet(operationSetId);
@@ -286,9 +395,6 @@ async function updateMicrosoftProject({ action, record, store, records }) {
                 catch (error) {
                     await abandonOperationSet(operationSetId);
                     console.error('Error:', error);
-                }
-                finally {
-                    gantt.unmaskBody();
                 }
             }
         });

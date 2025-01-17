@@ -39,7 +39,41 @@ export async function getProjectTasks() {
     }
 }
 
-export async function getProjectTaskById(taskId) {
+export async function getOperationSetStatus(operationSetId) {
+    const accessToken = await getToken();
+    ensureScope(`https://${import.meta.env.VITE_MICROSOFT_DYNAMICS_ORG_ID}.api.crm4.dynamics.com/.default`);
+
+    const response = await fetch(
+        `https://${import.meta.env.VITE_MICROSOFT_DYNAMICS_ORG_ID}.api.crm4.dynamics.com/api/data/v9.1/msdyn_operationsets(${operationSetId})`, {
+            headers : {
+                'Authorization' : `Bearer ${accessToken}`
+            }
+        });
+
+    if (!response.ok) {
+        throw new Error('Failed to get operation set status');
+    }
+
+    const data = await response.json();
+    return data.msdyn_status;
+}
+
+export async function waitForOperationSetCompletion(operationSetId, operationType, maxRetries = 40, delay = 300) {
+    for (let i = 0; i < maxRetries; i++) {
+        const status = await getOperationSetStatus(operationSetId);
+        if (status === 192350003) {
+            console.log('Operation set completed');
+            return true;
+        }
+        if (status === 192350001) {
+            console.log(`Operation set processing. Waiting for ${operationType} creation in Dataverse...`);
+        }
+        await new Promise(resolve => setTimeout(resolve, delay));
+    }
+    throw new Error('Operation set completion timed out');
+}
+
+export async function checkTaskExists(taskId) {
     try {
         const accessToken = await getToken();
         ensureScope(`https://${
@@ -67,31 +101,13 @@ export async function getProjectTaskById(taskId) {
         if (!response.ok) {
             throw new Error(`HTTP error! status: ${response.status}`);
         }
-        const data = await response.json();
-        return data.msdyn_displaysequence;
+        return true;
     }
     catch (error) {
         console.error('Error fetching project task:', error);
         throw error;
     }
 }
-
-export async function waitForTaskCreationThenGetId(taskId, maxRetries = 20, delay = 1000) {
-    for (let i = 0; i < maxRetries; i++) {
-        try {
-            const task = await getProjectTaskById(taskId);
-            return task;
-        }
-        catch {
-            if (i === maxRetries - 1) {
-                throw new Error('Task creation timed out');
-            }
-            console.log('Task not created yet, checking for newly created task again...');
-            await new Promise((resolve) => setTimeout(resolve, delay));
-        }
-    }
-}
-
 
 export async function getProjectTaskDependencies() {
     try {
@@ -145,15 +161,21 @@ export async function createProjectTask(projectId, projectBucketId, operationSet
             'msdyn_subject'                  : record.name,
             'msdyn_start'                    : `${record.startDate.toISOString()}`,
             'msdyn_finish'                   : `${record.endDate.toISOString()}`,
+            'msdyn_description'              : record.note,
+            'msdyn_outlinelevel'             : record.childLevel + 1,
             '@odata.type'                    : 'Microsoft.Dynamics.CRM.msdyn_projecttask',
             'msdyn_project@odata.bind'       : `msdyn_projects(${projectId})`,
             'msdyn_projectbucket@odata.bind' : `msdyn_projectbuckets(${projectBucketId})`,
-            '_msdyn_parenttask_value'        : record.parentId,
             'msdyn_progress'                 : record.percentDone / 100,
             'msdyn_displaysequence'          : msdyn_displaysequence
+
         },
         'OperationSetId' : operationSetId
     };
+
+    if (record.parentId) {
+        payload.Entity['msdyn_parenttask@odata.bind'] = `msdyn_projecttasks(${record.parentId})`;
+    }
 
     const response = await fetch(apiUrl, {
         method  : 'POST',
@@ -275,7 +297,7 @@ export async function abandonOperationSet(operationSetId) {
     return data;
 }
 
-export async function updateProjectTask(projectId, projectBucketId, operationSetId, record, msdyn_displaysequence) {
+export async function updateProjectTask(operationSetId, record, msdyn_displaysequence, isReorder, isParentTask) {
     const accessToken = await getToken();
     ensureScope(`https://${import.meta.env.VITE_MICROSOFT_DYNAMICS_ORG_ID}.api.crm4.dynamics.com/.default`);
     if (!accessToken) {
@@ -286,25 +308,29 @@ export async function updateProjectTask(projectId, projectBucketId, operationSet
 
     const payloadObj = {
         Entity : {
-            msdyn_projecttaskid              : record.id,
-            '@odata.type'                    : 'Microsoft.Dynamics.CRM.msdyn_projecttask',
-            'msdyn_project@odata.bind'       : `msdyn_projects(${projectId})`,
-            'msdyn_projectbucket@odata.bind' : `msdyn_projectbuckets(${projectBucketId})`
+            msdyn_projecttaskid  : record.id,
+            '@odata.type'        : 'Microsoft.Dynamics.CRM.msdyn_projecttask',
+            'msdyn_outlinelevel' : record.childLevel + 1
         },
         OperationSetId : operationSetId
     };
 
+    if (record.parentId) {
+        payloadObj.Entity['msdyn_parenttask@odata.bind'] = `msdyn_projecttasks(${record.parentId})`;
+    }
+
     if (record.name) {
         payloadObj.Entity.msdyn_subject = record.name;
     }
-    if (record.startDate) {
+    // exclude start and end date for reorder operation and when updating parent task
+    if (record.startDate && !isReorder && !isParentTask) {
         payloadObj.Entity.msdyn_start = `${record.startDate.toISOString()}`;
     }
-    if (record.endDate) {
+    if (record.endDate && !isReorder && !isParentTask) {
         payloadObj.Entity.msdyn_finish = `${record.endDate.toISOString()}`;
     }
-    if (record.parentId) {
-        payloadObj.Entity._msdyn_parenttask_value = record.parentId;
+    if (record.note) {
+        payloadObj.Entity.msdyn_description = record.note;
     }
     if (msdyn_displaysequence) {
         payloadObj.Entity.msdyn_displaysequence = msdyn_displaysequence;
