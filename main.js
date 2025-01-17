@@ -110,6 +110,7 @@ async function displayUI() {
         });
         ganttTasks.sort((a, b) => a.msdyn_displaysequence - b.msdyn_displaysequence);
         gantt.project.tasks = ganttTasks;
+
         const ganttDependencies = [];
         projectDependencies.forEach((dep) => {
             ganttDependencies.push({
@@ -183,12 +184,12 @@ async function updateMicrosoftProject({ action, record, store, records }) {
     if (storeId === 'tasks') {
         if (action === 'update') {
             if (`${record.id}`.startsWith('_generated')) {
+                if (disableCreate) return;
                 if (!record.name) return;
                 let operationSetId = '';
                 const projectId = import.meta.env.VITE_MSDYN_PROJECT_ID;
                 const projectBucketId = import.meta.env.VITE_MSDYN_PROJECTBUCKET_VALUE;
                 const description = 'Create operation set for new project task';
-                if (disableCreate) return;
 
                 try {
                     gantt.maskBody('Creating task...');
@@ -293,6 +294,7 @@ async function updateMicrosoftProject({ action, record, store, records }) {
             }
         }
         if (action === 'remove') {
+            if (disableDelete) return;
             const recordsData = records.map((record) => record.data);
             recordsData.forEach(async(record) => {
                 if (record.id.startsWith('_generated')) return;
@@ -300,7 +302,6 @@ async function updateMicrosoftProject({ action, record, store, records }) {
                 const projectId = import.meta.env.VITE_MSDYN_PROJECT_ID;
                 const description = 'Create operation set for deleting project task';
                 try {
-                    if (disableDelete) return;
                     operationSetId = await createOperationSet(projectId, description);
                     await deleteProjectTask(operationSetId, record.id);
                     await executeOperationSet(operationSetId);

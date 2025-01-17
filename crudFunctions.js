@@ -73,42 +73,6 @@ export async function waitForOperationSetCompletion(operationSetId, operationTyp
     throw new Error('Operation set completion timed out');
 }
 
-export async function checkTaskExists(taskId) {
-    try {
-        const accessToken = await getToken();
-        ensureScope(`https://${
-        import.meta.env.VITE_MICROSOFT_DYNAMICS_ORG_ID
-    }.api.crm4.dynamics.com/.default`);
-        if (!accessToken) {
-            throw new Error('Access token is missing');
-        }
-
-        const apiUrl = `https://${
-      import.meta.env.VITE_MICROSOFT_DYNAMICS_ORG_ID
-    }.api.crm4.dynamics.com/api/data/v9.1/msdyn_projecttasks(${taskId})`;
-
-        const response = await fetch(apiUrl, {
-            method  : 'GET',
-            headers : {
-                'Authorization'    : `Bearer ${accessToken}`,
-                'OData-MaxVersion' : '4.0',
-                'OData-Version'    : '4.0',
-                'Accept'           : 'application/json',
-                'Content-Type'     : 'application/json'
-            }
-        });
-
-        if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        return true;
-    }
-    catch (error) {
-        console.error('Error fetching project task:', error);
-        throw error;
-    }
-}
-
 export async function getProjectTaskDependencies() {
     try {
         const accessToken = await getToken();
@@ -323,9 +287,7 @@ export async function updateProjectTask(operationSetId, record, msdyn_displayseq
         payloadObj.Entity.msdyn_subject = record.name;
     }
     // exclude start and end date for reorder operation and when updating parent task
-    if (record.startDate && !isReorder && !isParentTask) {
-        payloadObj.Entity.msdyn_start = `${record.startDate.toISOString()}`;
-    }
+
     if (record.endDate && !isReorder && !isParentTask) {
         payloadObj.Entity.msdyn_finish = `${record.endDate.toISOString()}`;
     }
