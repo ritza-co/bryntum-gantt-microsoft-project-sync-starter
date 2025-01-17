@@ -286,8 +286,7 @@ export async function updateProjectTask(operationSetId, record, msdyn_displayseq
     if (record.name) {
         payloadObj.Entity.msdyn_subject = record.name;
     }
-    // exclude start and end date for reorder operation and when updating parent task
-
+    // exclude end date for reorder operation and when updating parent task
     if (record.endDate && !isReorder && !isParentTask) {
         payloadObj.Entity.msdyn_finish = `${record.endDate.toISOString()}`;
     }
