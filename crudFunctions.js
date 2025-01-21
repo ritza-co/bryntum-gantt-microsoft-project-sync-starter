@@ -286,13 +286,20 @@ export async function updateProjectTask(operationSetId, record, msdyn_displayseq
     if (record.name) {
         payloadObj.Entity.msdyn_subject = record.name;
     }
+
+    if (record.startDate) {
+        payloadObj.Entity.msdyn_start = `${record.startDate.toISOString()}`;
+    }
+
     // exclude end date for reorder operation and when updating parent task
     if (record.endDate && !isReorder && !isParentTask) {
         payloadObj.Entity.msdyn_finish = `${record.endDate.toISOString()}`;
     }
+
     if (record.note) {
         payloadObj.Entity.msdyn_description = record.note;
     }
+
     if (msdyn_displaysequence) {
         payloadObj.Entity.msdyn_displaysequence = msdyn_displaysequence;
     }
