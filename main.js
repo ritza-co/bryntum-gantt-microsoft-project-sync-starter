@@ -8,6 +8,7 @@ const signInLink = document.getElementById('signin');
 
 let disableCreate = false;
 let disableDelete = false;
+let disableUpdate = false;
 
 const gantt = new Gantt({
     appendTo   : 'gantt',
@@ -249,6 +250,7 @@ async function updateMicrosoftProject({ action, record, store, records }) {
                 if (Object.keys(record.meta.modified).length === 0) return;
                 if (record.meta.modified.effort === 0 && Object.keys(record.meta.modified).length === 1) return;
                 if (record.meta.modified.id && Object.keys(record.meta.modified).length === 1) return;
+                if (record.meta.modified.name === null) return;
                 let operationSetId = '';
                 const projectId = import.meta.env.VITE_MSDYN_PROJECT_ID;
                 const description = 'Create operation set for updating a project task';
@@ -338,6 +340,11 @@ async function updateMicrosoftProject({ action, record, store, records }) {
                                 }
                             ]
                         });
+                        // temporarily disable the dependency update listener
+                        disableUpdate = true;
+                        setTimeout(() => {
+                            disableUpdate = false;
+                        }, 600);
                         await waitForOperationSetCompletion(operationSetId, 'dependency');
                         return;
                     }
@@ -358,6 +365,7 @@ async function updateMicrosoftProject({ action, record, store, records }) {
                     try {
                         gantt.maskBody('Updating dependency...');
                         operationSetId = await createOperationSet(projectId, description);
+                        if (disableUpdate) return;
                         await deleteProjectTaskDependency(record.id, operationSetId);
                         const createProjectTaskDependencyResponse = await createProjectTaskDependency(projectId, operationSetId, record);
                         await executeOperationSet(operationSetId);
